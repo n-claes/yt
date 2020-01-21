@@ -107,6 +107,34 @@ class Scene(object):
             return self.sources[item]
         return self.get_source(item)
 
+    _background_color = "black"
+    def background_color():
+        doc = """
+        The background color sets the color of the scene's background.
+        Note that background_color cannot be set if the scene contains 
+        a VolumeSource with a grey_opacity=False transfer function
+
+        Parameters
+        ----------
+        background_color : string or 3 or 4 element iterable
+        The color to use for the background. It will be converted
+        to an RGBA tuple using matplotlib.colors.to_rgba.
+        """
+
+        def fget(self):
+            return self._background_color
+
+        def fset(self, value):
+            for source in self.sources.values():
+                if isinstance(source, VolumeSource):
+                    tf = source.transfer_function
+                    if not getattr(tf, 'grey_opacity', False):
+                        raise RuntimeError("Cannot set the background color for a render "
+                                           "source with grey_opacity=True")
+            self._background_color = value
+        return locals()
+    background_color = property(**background_color())
+
     @property
     def opaque_sources(self):
         """
@@ -534,7 +562,7 @@ class Scene(object):
         """
         if camera is None:
             camera = self.camera
-        empty = camera.lens.new_image(camera)
+        empty = camera.lens.new_image(camera, color=self.background_color)
         opaque = ZBuffer(empty, np.full(empty.shape[:2], np.inf))
 
         for k, source in self.opaque_sources:

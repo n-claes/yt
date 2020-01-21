@@ -46,12 +46,15 @@ class Lens(ParallelAnalysisInterface):
         """
         self.setup_box_properties(camera)
 
-    def new_image(self, camera):
+    def new_image(self, camera, color='k'):
         """Initialize a new ImageArray to be used with this lens."""
+        from matplotlib.colors import to_rgba
+        color = to_rgba(color)
         self.current_image = ImageArray(
             np.zeros((camera.resolution[0], camera.resolution[1],
                       4), dtype='float64', order='C'),
             info={'imtype': 'rendering'})
+        self.current_image += color
         return self.current_image
 
     def setup_box_properties(self, camera):
@@ -150,13 +153,6 @@ class PerspectiveLens(Lens):
 
     def __init__(self):
         super(PerspectiveLens, self).__init__()
-
-    def new_image(self, camera):
-        self.current_image = ImageArray(
-            np.zeros((camera.resolution[0], camera.resolution[1], 
-                      4), dtype='float64', order='C'),
-            info={'imtype': 'rendering'})
-        return self.current_image
 
     def _get_sampler_params(self, camera, render_source):
         # Enforce width[1] / width[0] = resolution[1] / resolution[0]
@@ -297,14 +293,6 @@ class StereoPerspectiveLens(Lens):
     def __init__(self):
         super(StereoPerspectiveLens, self).__init__()
         self.disparity = None
-
-    def new_image(self, camera):
-        """Initialize a new ImageArray to be used with this lens."""
-        self.current_image = ImageArray(
-            np.zeros((camera.resolution[0], camera.resolution[1], 4),
-                     dtype='float64', order='C'),
-            info={'imtype': 'rendering'})
-        return self.current_image
 
     def _get_sampler_params(self, camera, render_source):
         # Enforce width[1] / width[0] = 2 * resolution[1] / resolution[0]
@@ -522,14 +510,6 @@ class FisheyeLens(Lens):
         self.radius = camera.width.max()
         super(FisheyeLens, self).setup_box_properties(camera)
         self.set_viewpoint(camera)
-
-    def new_image(self, camera):
-        """Initialize a new ImageArray to be used with this lens."""
-        self.current_image = ImageArray(
-            np.zeros((camera.resolution[0], camera.resolution[0],
-                      4), dtype='float64', order='C'),
-            info={'imtype': 'rendering'})
-        return self.current_image
 
     def _get_sampler_params(self, camera, render_source):
         vp = -arr_fisheye_vectors(camera.resolution[0], self.fov)
