@@ -177,6 +177,7 @@ class AMRVACDataset(Dataset):
         namelist_gamma = None
         c_adiab = None
         e_is_internal = None
+        stretch_params = {}
         if parfiles is not None:
             namelist = read_amrvac_namelist(parfiles)
             if "hd_list" in namelist:
@@ -188,9 +189,10 @@ class AMRVACDataset(Dataset):
 
             if namelist_gamma is not None and self.gamma != namelist_gamma:
                 mylog.error("Inconsistent values in gamma: datfile {}, parfiles {}".format(self.gamma, namelist_gamma))
-
-            if "method_list" in namelist:
-                e_is_internal = namelist["method_list"].get("solve_internal_e", False)
+            if "methodlist" in namelist:
+                e_is_internal = namelist["methodlist"].get("solve_internal_e", False)
+            if "meshlist" in namelist:
+                stretch_params.update(self._get_stretching_params(namelist["meshlist"]))
 
         if c_adiab is not None:
             # this complicated unit is required for the adiabatic equation of state to make physical sense
@@ -199,7 +201,7 @@ class AMRVACDataset(Dataset):
         self.namelist = namelist
         self._c_adiab = c_adiab
         self._e_is_internal = e_is_internal
-
+        self._stretch_params = stretch_params
         self.fluid_types += ('amrvac',)
         # refinement factor between a grid and its subgrid
         self.refine_by = 2
@@ -253,6 +255,44 @@ class AMRVACDataset(Dataset):
         if geometry_yt not in ("cartesian", "polar", "cylindrical", "spherical"):
             raise ValueError
         return geometry_yt
+
+    def _get_stretching_params(self, nml_meshlist):
+        """Retrieves AMRVAC's stretching parameters from the parfile. Defaults are calculated for
+        the namelist objects that are not present.
+
+        Parameters
+        ----------
+        nml_meshlist : f90nml namelist
+            The 'meshlist' from AMRVAC's parfile as a f90nml namelist
+
+        Returns
+        -------
+        stretch_params : dict
+            Dictionary containing the stretching parameters 'stretch_dim', 'stretch_uncentered',
+            'qstretch_baselvl' and 'nstretchedblocks_baselvl'
+        """
+        # stretch_dim should be a length-ndim list
+        stretch_dim = nml_meshlist.get("stretch_dim", [None] * self.dimensionality)
+        # the string 'none' can be set as well, convert to proper None
+        for i, stretch in enumerate(stretch_dim):
+            if stretch in ('none', 'None'):
+                stretch_dim[i] = None
+        while len(stretch_dim) != self.dimensionality:
+            stretch_dim.append(None)
+        # log some information to console
+        mylog.info("Stretching: stretch_dim {:>14}= {}".format("", stretch_dim))
+
+        stretch_uncentered = nml_meshlist.get("stretch_uncentered", True)
+
+        qstretch_baselvl = nml_meshlist.get("qstretch_baselevel", [1.0] * self.dimensionality)
+        nstretchedblocks_baselvl = nml_meshlist.get("nstretchedblocks_baselevel", [0] * self.dimensionality)
+
+        # TODO: calculate defaults qstretch and nstretchedblocks
+
+        return {"stretch_dim": stretch_dim,
+                "stretch_uncentered": stretch_uncentered,
+                "qstretch_baselvl": qstretch_baselvl,
+                "nstretchedblocks_baselvl": nstretchedblocks_baselvl}
 
     def _parse_parameter_file(self):
         """Parse input datfile's header. Apply geometry_override if specified."""
