@@ -269,10 +269,24 @@ class AMRVACDataset(Dataset):
         -------
         stretch_params : dict
             Dictionary containing the stretching parameters 'stretch_dim', 'stretch_uncentered',
-            'qstretch_baselvl' and 'nstretchedblocks_baselvl'
+            'qstretch_baselvl', 'qstretch', 'dxfirst' and 'nstretchedblocks_baselvl'.
+            - stretch_dim : list
+                Has length ndim. Refers to stretching type used, can be None, 'uni' or 'symm'.
+            - stretch_uncentered : boolean
+                Takes into account that a cell face is not between stretched cell-centres. Defaults to True.
+            - qstretch_baselvl : list
+                Has length ndim.  Stretching factor for the lowest refinement level (index refers to direction).
+            - qstretch : list
+                Has size (max_amr_levels, ndim). Contains the stretching factors for every direction
+                at each refinement level.
+            - dxfirst : list
+                Has size (max_amr_levels, ndim). Contains the first dx of the simulation space
+                for every direction at each refinement level.
+            - nstretchedblocks_baselvl: list
+                Has length ndim. Only used for 'symm' stretching, controls how many blocks are unstretched
+                in the middle for each direction.
         """
-        # stretch_dim should be a length-ndim list
-        stretch_dim = nml_meshlist.get("stretch_dim", [None] * self.dimensionality)
+        stretch_dim = nml_meshlist.get("stretch_dim", np.array([None] * self.dimensionality))
         # the string 'none' can be set as well, convert to proper None
         for i, stretch in enumerate(stretch_dim):
             if stretch in ('none', 'None'):
@@ -282,16 +296,41 @@ class AMRVACDataset(Dataset):
         # log some information to console
         mylog.info("Stretching: stretch_dim {:>14}= {}".format("", stretch_dim))
 
+        # explicitly retrieve these, as grid information is set up AFTER initialisation of AMRVACDataset
+        max_amr_lvl = self.parameters['levmax']
+        xmin = self.parameters['xmin']
+        xmax = self.parameters['xmax']
+        domain_nx = self.parameters['domain_nx']
+
         stretch_uncentered = nml_meshlist.get("stretch_uncentered", True)
+        qstretch_baselvl = nml_meshlist.get("qstretch_baselevel", np.ones(self.dimensionality))
+        nstretchedblocks_baselvl = nml_meshlist.get("nstretchedblocks_baselevel", np.zeros(self.dimensionality))
+        qstretch = np.zeros(shape=(max_amr_lvl + 1, self.dimensionality))
+        dxfirst = np.zeros_like(qstretch)
 
-        qstretch_baselvl = nml_meshlist.get("qstretch_baselevel", [1.0] * self.dimensionality)
-        nstretchedblocks_baselvl = nml_meshlist.get("nstretchedblocks_baselevel", [0] * self.dimensionality)
+        if 'symm' in stretch_dim:
+            raise NotImplementedError("Symmetric stretching is not (yet) implemented.")
 
-        # TODO: calculate defaults qstretch and nstretchedblocks
-
+        # loop over explicitly, we could remove idir and do array calculations, but
+        # we will run into issues for sdim=None (then xmin can be equal to 0).
+        for idir, sdim in enumerate(stretch_dim):
+            if sdim is None:
+                continue
+            # for stretching xmin is never zero
+            qstretch_baselvl[idir] = (xmax[idir] / xmin[idir])**(1.0 / domain_nx[idir])
+            qstretch[1, idir] = qstretch_baselvl[idir]
+            dxfirst[1, idir] = (xmax[idir] - xmin[idir]) * (1 - qstretch[1, idir]) / (1 - qstretch[1, idir]**domain_nx[idir])
+            qstretch[0, idir] = qstretch[1, idir]**2
+            dxfirst[0, idir] = dxfirst[1, idir] * (1 + qstretch[1, idir])
+            if max_amr_lvl > 1:
+                for lvl in range(2, max_amr_lvl + 1):
+                    qstretch[lvl, idir] = np.sqrt(qstretch[lvl - 1, idir])
+                    dxfirst[lvl, idir] = dxfirst[lvl - 1, idir] / (1 + np.sqrt(qstretch[lvl - 1, idir]))
         return {"stretch_dim": stretch_dim,
                 "stretch_uncentered": stretch_uncentered,
                 "qstretch_baselvl": qstretch_baselvl,
+                "qstretch": qstretch,
+                "dxfirst": dxfirst,
                 "nstretchedblocks_baselvl": nstretchedblocks_baselvl}
 
     def _parse_parameter_file(self):
