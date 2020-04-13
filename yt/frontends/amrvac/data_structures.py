@@ -31,6 +31,10 @@ from yt.data_objects.static_output import \
    Dataset
 from yt.utilities.physical_constants import \
     boltzmann_constant_cgs as kb_cgs
+from yt.geometry.unstructured_mesh_handler import \
+    UnstructuredIndex
+from yt.data_objects.unstructured_mesh import \
+    SemiStructuredMesh
 
 from .fields import AMRVACFieldInfo
 from .datfile_utils import get_header, get_tree_info
@@ -41,6 +45,32 @@ ALLOWED_UNIT_COMBINATIONS = [{'numberdensity_unit', 'temperature_unit', 'length_
                              {'mass_unit', 'time_unit', 'length_unit'},
                              {'numberdensity_unit', 'velocity_unit', 'length_unit'},
                              {'mass_unit', 'velocity_unit', 'length_unit'}]
+
+
+class AMRVACStretchedHierarchy(UnstructuredIndex):
+    def __init__(self, ds, dataset_type='amrvac'):
+        self.dataset_type = dataset_type
+        self.dataset = weakref.proxy(ds)
+        self.index_filename = self.dataset.parameter_filename
+        self.directory = os.path.dirname(self.index_filename)
+        self.float_type = np.float64
+
+        super(AMRVACStretchedHierarchy, self).__init__(ds, dataset_type)
+
+    def _initialize_mesh(self):
+        # TODO
+        pass
+
+    def _detect_output_fields(self):
+        self.field_list = [(self.dataset_type, f) for f in self.dataset.parameters["w_names"]]
+
+
+class AMRVACStretchedMesh(SemiStructuredMesh):
+    def __init__(self):
+        # TODO
+        pass
+        super(AMRVACStretchedMesh, self).__init__(mesh_id=None, filename=None, connectivity_indices=None,
+                                                  connectivity_coords=None, index=None)
 
 
 class AMRVACGrid(AMRGridPatch):
@@ -131,9 +161,7 @@ class AMRVACHierarchy(GridIndex):
             g._setup_dx()
 
 
-
 class AMRVACDataset(Dataset):
-    _index_class = AMRVACHierarchy
     _field_info_class = AMRVACFieldInfo
 
     def __init__(self, filename, dataset_type='amrvac',
@@ -166,18 +194,16 @@ class AMRVACDataset(Dataset):
 
         """
         # note: geometry_override and parfiles are specific to this frontend
-
         self._geometry_override = geometry_override
-        super(AMRVACDataset, self).__init__(filename, dataset_type,
-                                            units_override=units_override, unit_system=unit_system)
-
         self._parfiles = parfiles
+        self.filename = filename
+        self.stretched_grid = False
+        self.stretch_params = {}
 
         namelist = None
         namelist_gamma = None
         c_adiab = None
         e_is_internal = None
-        stretch_params = {}
         if parfiles is not None:
             namelist = read_amrvac_namelist(parfiles)
             if "hd_list" in namelist:
@@ -192,7 +218,16 @@ class AMRVACDataset(Dataset):
             if "methodlist" in namelist:
                 e_is_internal = namelist["methodlist"].get("solve_internal_e", False)
             if "meshlist" in namelist:
-                stretch_params.update(self._get_stretching_params(namelist["meshlist"]))
+                self.stretch_params.update(self._get_stretching_params(namelist))
+                if self.stretch_params['stretch_dim'].any() is not None:
+                    self.stretched_grid = True
+
+        if self.stretched_grid:
+            self._index_class = AMRVACStretchedHierarchy
+        else:
+            self._index_class = AMRVACHierarchy
+        super(AMRVACDataset, self).__init__(filename, dataset_type, units_override=units_override,
+                                            unit_system=unit_system)
 
         if c_adiab is not None:
             # this complicated unit is required for the adiabatic equation of state to make physical sense
@@ -201,7 +236,6 @@ class AMRVACDataset(Dataset):
         self.namelist = namelist
         self._c_adiab = c_adiab
         self._e_is_internal = e_is_internal
-        self._stretch_params = stretch_params
         self.fluid_types += ('amrvac',)
         # refinement factor between a grid and its subgrid
         self.refine_by = 2
@@ -256,14 +290,14 @@ class AMRVACDataset(Dataset):
             raise ValueError
         return geometry_yt
 
-    def _get_stretching_params(self, nml_meshlist):
+    def _get_stretching_params(self, namelist):
         """Retrieves AMRVAC's stretching parameters from the parfile. Defaults are calculated for
         the namelist objects that are not present.
 
         Parameters
         ----------
-        nml_meshlist : f90nml namelist
-            The 'meshlist' from AMRVAC's parfile as a f90nml namelist
+        namelist : f90nml namelist
+            The AMRVAC parfile as a f90nml namelist
 
         Returns
         -------
@@ -286,26 +320,38 @@ class AMRVACDataset(Dataset):
                 Has length ndim. Only used for 'symm' stretching, controls how many blocks are unstretched
                 in the middle for each direction.
         """
-        stretch_dim = nml_meshlist.get("stretch_dim", np.array([None] * self.dimensionality))
+        header = {}
+        with open(self.filename, 'rb') as istream:
+            header.update(get_header(istream))
+        dimensionality = header['ndim']
+        meshlist = namelist['meshlist']
+        # @devnote Niels: It seems that there is no other option than reading the header twice: once here and once in
+        # _parse_parameter_file. At first I was thinking to populate self.parameters right after calling
+        # AMRVACDataset.__init__, but yt sets self.parameters back to an empty dict {} when calling init on the super class.
+        # There is no way to know if AMRVAC is using a stretched grid without parsing the stretching parameters in
+        # the parfile, and for those the dimensions and mesh boundaries have to be known.
+        # We HAVE to obtain all stretching parameters before calling the super class, since depending on whether or not
+        # there is stretching we initialise AMRVACHierarchy or AMRVACStretchedHierarchy.
+
+        stretch_dim = meshlist.get("stretch_dim", np.array([None] * dimensionality))
         # the string 'none' can be set as well, convert to proper None
         for i, stretch in enumerate(stretch_dim):
             if stretch in ('none', 'None'):
                 stretch_dim[i] = None
-        while len(stretch_dim) != self.dimensionality:
+        while len(stretch_dim) != dimensionality:
             stretch_dim.append(None)
+        stretch_dim = np.asarray(stretch_dim)
         # log some information to console
         mylog.info("Stretching: stretch_dim {:>14}= {}".format("", stretch_dim))
 
-        # explicitly retrieve these, as grid information is set up AFTER initialisation of AMRVACDataset
-        max_amr_lvl = self.parameters['levmax']
-        xmin = self.parameters['xmin']
-        xmax = self.parameters['xmax']
-        domain_nx = self.parameters['domain_nx']
-
-        stretch_uncentered = nml_meshlist.get("stretch_uncentered", True)
-        qstretch_baselvl = nml_meshlist.get("qstretch_baselevel", np.ones(self.dimensionality))
-        nstretchedblocks_baselvl = nml_meshlist.get("nstretchedblocks_baselevel", np.zeros(self.dimensionality))
-        qstretch = np.zeros(shape=(max_amr_lvl + 1, self.dimensionality))
+        max_amr_lvl = header['levmax']
+        xmin = header['xmin']
+        xmax = header['xmax']
+        domain_nx = header['domain_nx']
+        stretch_uncentered = meshlist.get("stretch_uncentered", True)
+        qstretch_baselvl = meshlist.get("qstretch_baselevel", np.ones(dimensionality))
+        nstretchedblocks_baselvl = meshlist.get("nstretchedblocks_baselevel", np.zeros(dimensionality))
+        qstretch = np.zeros(shape=(max_amr_lvl + 1, dimensionality))
         dxfirst = np.zeros_like(qstretch)
 
         if 'symm' in stretch_dim:
@@ -475,12 +521,10 @@ class AMRVACDataset(Dataset):
         setdefaultattr(self, 'pressure_unit', pressure_unit)
         setdefaultattr(self, 'magnetic_unit', magnetic_unit)
 
-
     def _override_code_units(self):
         """Add a check step to the base class' method (Dataset)."""
         self._check_override_consistency()
         super(AMRVACDataset, self)._override_code_units()
-
 
     def _check_override_consistency(self):
         """Check that keys in units_override are consistent with respect to AMRVAC's internal way to
