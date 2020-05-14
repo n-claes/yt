@@ -55,22 +55,49 @@ class AMRVACStretchedHierarchy(UnstructuredIndex):
         self.directory = os.path.dirname(self.index_filename)
         self.float_type = np.float64
 
+        self.num_meshes = self.dataset.parameters['nleafs']
+
         super(AMRVACStretchedHierarchy, self).__init__(ds, dataset_type)
 
     def _initialize_mesh(self):
-        # TODO
-        pass
+        mylog.debug('initialising mesh...')
+        # read tree info from datfile
+        with open(self.index_filename, "rb") as istream:
+            vaclevels, morton_indices, block_offsets = get_tree_info(istream)
+            assert len(vaclevels) == len(morton_indices) == len(block_offsets) == self.num_meshes
+        self.block_offsets = block_offsets
+
+        ytlevels = np.array(vaclevels, dtype="int32") - 1
+        block_nx = self.dataset.parameters["block_nx"]
+        xmin = self.dataset.parameters["xmin"]
+        xmax = self.dataset.parameters['xmax']
+        # print(xmin, xmax, block_nx, len(ytlevels))
+        dim = self.dataset.dimensionality
+        self.meshes = np.empty(self.num_meshes, dtype='object')
+        for igrid, (vaclevel, morton_index) in enumerate(zip(vaclevels, morton_indices)):
+            for i in range(dim):
+                dx = self.dataset.stretch_params['dxfirst'][vaclevel][i]
+                q = self.dataset.stretch_params['qstretch'][vaclevel][i]
+                ileft = (morton_index[i] - 1)*block_nx[i]
+                iright = morton_index[i]*block_nx[i]
+                left_edge = np.zeros(shape=(block_nx[i], dim))
+                right_edge = np.zeros_like(left_edge)
+                for j in range(block_nx[i]):
+                    left_edge[j, i] = xmin[i] + dx*(1 - q**(ileft + j)) / (1 - q)
+                    right_edge[j, i] = xmin[i] + dx*(1 - q**(ileft + j + 1)) / (1 - q)
+                if igrid == 63:
+                    print(morton_index, left_edge, right_edge)
+
 
     def _detect_output_fields(self):
         self.field_list = [(self.dataset_type, f) for f in self.dataset.parameters["w_names"]]
 
 
 class AMRVACStretchedMesh(SemiStructuredMesh):
-    def __init__(self):
-        # TODO
-        pass
-        super(AMRVACStretchedMesh, self).__init__(mesh_id=None, filename=None, connectivity_indices=None,
-                                                  connectivity_coords=None, index=None)
+    def __init__(self, mesh_id, filename, connectivity_indices,
+                 connectivity_coords, index):
+        super(AMRVACStretchedMesh, self).__init__(mesh_id, filename, connectivity_indices,
+                                                  connectivity_coords, index)
 
 
 class AMRVACGrid(AMRGridPatch):
