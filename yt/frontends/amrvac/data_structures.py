@@ -56,6 +56,7 @@ class AMRVACStretchedHierarchy(UnstructuredIndex):
         self.float_type = np.float64
 
         self.num_meshes = self.dataset.parameters['nleafs']
+        self.meshes = []
 
         super(AMRVACStretchedHierarchy, self).__init__(ds, dataset_type)
 
@@ -69,24 +70,43 @@ class AMRVACStretchedHierarchy(UnstructuredIndex):
 
         ytlevels = np.array(vaclevels, dtype="int32") - 1
         block_nx = self.dataset.parameters["block_nx"]
+        # not completely sure if this is required, but blocks should have an equal
+        # amount of cells in every direction
+        if not block_nx[1:] == block_nx[:-1]:
+            raise ValueError('Blocks should have an equal amount of cells in every direction')
         xmin = self.dataset.parameters["xmin"]
         xmax = self.dataset.parameters['xmax']
-        # print(xmin, xmax, block_nx, len(ytlevels))
+        dx0 = (xmax - xmin) / (self.dataset.parameters["domain_nx"])
         dim = self.dataset.dimensionality
-        self.meshes = np.empty(self.num_meshes, dtype='object')
+        stretch_dim = self.dataset.stretch_params['stretch_dim']
         for igrid, (vaclevel, morton_index) in enumerate(zip(vaclevels, morton_indices)):
-            for i in range(dim):
-                dx = self.dataset.stretch_params['dxfirst'][vaclevel][i]
-                q = self.dataset.stretch_params['qstretch'][vaclevel][i]
-                ileft = (morton_index[i] - 1)*block_nx[i]
-                iright = morton_index[i]*block_nx[i]
-                left_edge = np.zeros(shape=(block_nx[i], dim))
-                right_edge = np.zeros_like(left_edge)
-                for j in range(block_nx[i]):
-                    left_edge[j, i] = xmin[i] + dx*(1 - q**(ileft + j)) / (1 - q)
-                    right_edge[j, i] = xmin[i] + dx*(1 - q**(ileft + j + 1)) / (1 - q)
-                if igrid == 63:
-                    print(morton_index, left_edge, right_edge)
+            # initialise coords as a (N, 3) array with N the number of cells/block, we assume that
+            # N is equal in every direction (explicitly checked higher up)
+            coords = np.zeros(shape=(block_nx[0], 3))
+            # @devnote Niels: since we can have anisotropic grid stretching
+            # we handle every direction separately.
+            for idim in range(dim):
+                left_edge_idim = np.zeros(block_nx[idim])
+                right_edge_idim = np.zeros_like(left_edge_idim)
+                if not stretch_dim[idim] == 'uni':
+                    # if no stretching in this direction, use equidistant dx
+                    ytlevel = vaclevel - 1
+                    dx = dx0[idim] / self.dataset.refine_by ** ytlevel
+                    ileft = xmin[idim] + (morton_index[idim] - 1) * block_nx[idim] * dx
+                    for i in range(block_nx[idim]):
+                        left_edge_idim[i] = ileft + i * dx
+                    right_edge_idim = left_edge_idim + dx
+                else:
+                    dxfirst = self.dataset.stretch_params['dxfirst'][vaclevel][idim]
+                    qstretch = self.dataset.stretch_params['qstretch'][vaclevel][idim]
+                    ileft = (morton_index[idim] - 1) * block_nx[idim]
+                    for i in range(block_nx[idim]):
+                        left_edge_idim[i] = xmin[idim] + dxfirst * (1 - qstretch**(ileft + i)) / (1 - qstretch)
+                        right_edge_idim[i] = xmin[idim] + dxfirst * (1 - qstretch**(ileft + i + 1)) / (1 - qstretch)
+                coords[:, idim] = left_edge_idim
+                # TODO: 1) what is connectivity supposed to be?
+                #       2) how is the right edge handled?
+                #       3) create AMRVACStretchedMesh instances
 
 
     def _detect_output_fields(self):
@@ -249,6 +269,8 @@ class AMRVACDataset(Dataset):
                 if self.stretch_params['stretch_dim'].any() is not None:
                     self.stretched_grid = True
 
+        # refinement factor between a grid and its subgrid
+        self.refine_by = 2
         if self.stretched_grid:
             self._index_class = AMRVACStretchedHierarchy
         else:
@@ -259,13 +281,10 @@ class AMRVACDataset(Dataset):
         if c_adiab is not None:
             # this complicated unit is required for the adiabatic equation of state to make physical sense
             c_adiab *= self.mass_unit**(1-self.gamma) * self.length_unit**(2+3*(self.gamma-1)) / self.time_unit**2
-
         self.namelist = namelist
         self._c_adiab = c_adiab
         self._e_is_internal = e_is_internal
         self.fluid_types += ('amrvac',)
-        # refinement factor between a grid and its subgrid
-        self.refine_by = 2
 
     @classmethod
     def _is_valid(self, *args, **kwargs):
