@@ -9,6 +9,7 @@ import stat
 import struct
 import warnings
 import weakref
+from collections import OrderedDict
 
 import numpy as np
 import sympy as sp
@@ -188,7 +189,7 @@ class AMRVACDataset(Dataset):
         self._b0_is_split = False
         self._b0field = b0field
         self._allowed_b0split_keys = ("b01", "b02", "b03")
-        self._allowed_b0split_symbols = set(sp.symbols("ixo1, ixo2, ixo3"))
+        self._allowed_b0split_symbols = (sp.symbols("ixo1, ixo2, ixo3"))
 
         super(AMRVACDataset, self).__init__(
             filename,
@@ -317,7 +318,7 @@ class AMRVACDataset(Dataset):
         # check that equations are valid
         for eq in self._b0field.values():
             if isinstance(eq, sp.Expr):
-                if not eq.free_symbols.issubset(self._allowed_b0split_symbols):
+                if not eq.free_symbols.issubset(set(self._allowed_b0split_symbols)):
                     raise ValueError(
                         f"'b0field' equations may only contain the SymPy symbols "
                         f"{self._allowed_b0split_symbols} but received "
