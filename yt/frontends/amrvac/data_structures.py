@@ -184,8 +184,12 @@ class AMRVACDataset(Dataset):
         # note: geometry_override, parfiles and b0field are specific to this frontend
 
         self._geometry_override = geometry_override
+        # b0 field splitting stuff
         self._b0_is_split = False
         self._b0field = b0field
+        self._allowed_b0split_keys = ("b01", "b02", "b03")
+        self._allowed_b0split_symbols = set(sp.symbols("ixo1, ixo2, ixo3"))
+
         super(AMRVACDataset, self).__init__(
             filename,
             dataset_type,
@@ -193,9 +197,9 @@ class AMRVACDataset(Dataset):
             unit_system=unit_system,
         )
 
-        if b0field:
+        if self._b0field is not None:
             self._b0_is_split = True
-            self._parse_b0field()
+            self._validate_b0split_field()
 
         self._parfiles = parfiles
         namelist = None
@@ -295,12 +299,9 @@ class AMRVACDataset(Dataset):
         geom_key = geometry_tag.split("_")[0].lower()
         return known_geoms[geom_key]
 
-    def _parse_b0field(self):
-        """Parse the user-provided B0 field."""
+    def _validate_b0split_field(self):
+        """Validate the user-provided B0 field for field splitting."""
         # frontend specific method
-        allowed_b0_keys = ("b01", "b02", "b03")
-        allowed_b0_symbols = set(sp.symbols("ixo1, ixo2, ixo3"))
-
         # check that a dictionary is supplied
         if not isinstance(self._b0field, dict):
             raise ValueError("'b0field' kwarg should be a dictionary!")
@@ -308,18 +309,19 @@ class AMRVACDataset(Dataset):
             raise ValueError("'b0field' may contain at most 3 items.")
         # check that keys are valid
         for key in self._b0field.keys():
-            if key not in allowed_b0_keys:
+            if key not in self._allowed_b0split_keys:
                 raise KeyError(
-                    f"'b0field' should have keys ('b01', 'b02', 'b03') "
+                    f"'b0field' should have keys f{self._allowed_b0split_keys} "
                     f"but {key} was given."
                 )
         # check that equations are valid
         for eq in self._b0field.values():
             if isinstance(eq, sp.Expr):
-                if not eq.free_symbols.issubset(allowed_b0_symbols):
+                if not eq.free_symbols.issubset(self._allowed_b0split_symbols):
                     raise ValueError(
                         f"'b0field' equations may only contain the SymPy symbols "
-                        f"{allowed_b0_symbols} but received {eq.free_symbols}"
+                        f"{self._allowed_b0split_symbols} but received "
+                        f"{eq.free_symbols}"
                     )
             elif (
                 not isinstance(eq, (np.int, np.complex, np.float64)) and eq is not None
